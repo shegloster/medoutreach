@@ -2,8 +2,12 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<!-- v2.1 - fixes: no qty in consultation, save clears page, auto-navigate -->
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Healing Poach Medical Outreach – 24 May 2026</title>
+<title>Healing Poach Medical Outreach – 24 May 2026 v2.1</title>
 <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-database-compat.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=Playfair+Display:wght@600&display=swap" rel="stylesheet">
@@ -164,6 +168,18 @@ main{padding:1.5rem;max-width:1200px;margin:0 auto;width:100%;flex:1}
   .stats-grid{grid-template-columns:1fr 1fr}
   main{padding:1rem}
 }
+
+.toast{position:fixed;top:70px;right:20px;z-index:2000;background:var(--success);color:#fff;padding:12px 20px;border-radius:var(--radius);font-size:13px;font-weight:500;box-shadow:var(--shadow-md);opacity:0;transform:translateY(-8px);transition:all .3s;pointer-events:none}
+.toast.show{opacity:1;transform:translateY(0)}
+.toast.error{background:var(--danger)}
+
+.temp-flag{display:inline-block;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:600;margin-top:6px}
+.temp-normal{background:var(--success-bg);color:var(--success)}
+.temp-low{background:var(--info-bg);color:var(--info)}
+.temp-lowfever{background:var(--warn-bg);color:var(--warn)}
+.temp-fever{background:var(--danger-bg);color:var(--danger)}
+.temp-highfever{background:var(--danger-bg);color:var(--danger);font-weight:700;border:1px solid var(--danger)}
+.badge-fever{background:#FEE2E2;color:#B91C1C}
 </style>
 </head>
 <body>
@@ -263,7 +279,7 @@ main{padding:1.5rem;max-width:1200px;margin:0 auto;width:100%;flex:1}
                 <div class="field form-full"><label>BMI (auto-calculated)</label>
                   <div class="bmi-display" id="bmi-display"><div class="text-muted" style="font-size:12px">Enter weight &amp; height above</div></div>
                 </div>
-                <div class="field form-full"><label>Temperature (&deg;C)</label><input type="number" id="r-temp" step="0.1" min="30" max="45" placeholder="Optional" /></div>
+                <div class="field form-full"><label>Temperature (&deg;C)</label><input type="number" id="r-temp" step="0.1" min="30" max="45" placeholder="Optional" oninput="updateTempFlag()" /><div id="temp-flag-display"></div></div>
               </div>
               <button class="btn btn-navy" style="width:100%" onclick="registerPatient()">Register Patient</button>
             </div>
@@ -359,6 +375,7 @@ main{padding:1.5rem;max-width:1200px;margin:0 auto;width:100%;flex:1}
   </main>
 </div>
 
+<div class="toast" id="toast"></div>
 <!-- LOCK OVERLAY -->
 <div class="lock-overlay" id="lock-overlay" style="display:none">
   <div class="lock-card">
@@ -402,7 +419,7 @@ let db=null, offlineMode=false;
 let patients={}, drugs=[], stock={};
 let PINS={};
 let currentStation=null;
-let pendingUnlockStation=null, pendingUnlockCallback=null;
+let pendingUnlockStation=null, pendingUnlockCallback=null, pendingIsStationSelect=false;
 let selectedVitPatient=null, selectedConPatient=null, selectedPhaPatient=null;
 
 // ── DEFAULT FORMULARY ──────────────────────────────────────
@@ -516,23 +533,59 @@ function saveStock(drugId,updates){
 }
 
 function setDrugStock(drugId,total){
-  const s=getStock(drugId);
-  saveStock(drugId,{total:parseInt(total)||0,prescribed:s.prescribed,dispensed:s.dispensed});
+  requireStation(\'adm\',()=>{
+    const s=getStock(drugId);
+    saveStock(drugId,{total:parseInt(total)||0,prescribed:s.prescribed,dispensed:s.dispensed});
+    showToast(\'Stock updated successfully.\');
+    renderDrugAdmin();
+  });
 }
 
 // ── STATION / PIN ──────────────────────────────────────────
 const STATION_NAMES={reg:'Registration',vit:'Vitals',con:'Consultation',pha:'Pharmacy',adm:'Admin'};
+
+
+function tempFlag(temp){
+  if(!temp||isNaN(temp))return null;
+  const t=parseFloat(temp);
+  if(t<36.0)return{label:'Hypothermia',cls:'temp-low',badge:true};
+  if(t<37.5)return{label:'Normal',cls:'temp-normal',badge:false};
+  if(t<38.0)return{label:'Low-grade fever',cls:'temp-lowfever',badge:true};
+  if(t<39.5)return{label:'Fever',cls:'temp-fever',badge:true};
+  return{label:'High fever',cls:'temp-highfever',badge:true};
+}
+function tempFlagHTML(temp){
+  const f=tempFlag(temp);
+  if(!f)return '';
+  return `<span class="temp-flag ${f.cls}">&#127777; ${f.label} (${temp}&deg;C)</span>`;
+}
+
+function showToast(msg, isError){
+  const t=document.getElementById('toast');
+  t.textContent=msg;
+  t.className='toast'+(isError?' error':'');
+  setTimeout(()=>t.classList.add('show'),10);
+  setTimeout(()=>t.classList.remove('show'),3000);
+}
+
 function showStationSelector(){document.getElementById('station-overlay').style.display='flex';}
 function setStation(code){
   document.getElementById('station-overlay').style.display='none';
   requestUnlock(code,()=>{
     currentStation=code;
     document.getElementById('active-station-badge').textContent=STATION_NAMES[code];
-    if(code==='adm'){document.getElementById('adm-locked').style.display='none';document.getElementById('adm-content').style.display='block';renderDrugAdmin();}
-  });
+    if(code==='adm'){
+      document.getElementById('adm-locked').style.display='none';
+      document.getElementById('adm-content').style.display='block';
+      renderDrugAdmin();
+    }
+    switchTab(code);
+  },true);
 }
-function requestUnlock(station,callback){
-  pendingUnlockStation=station;pendingUnlockCallback=callback||null;
+function requestUnlock(station,callback,isStationSelect){
+  pendingUnlockStation=station;
+  pendingUnlockCallback=callback||null;
+  pendingIsStationSelect=isStationSelect||false;
   document.getElementById('lock-title').textContent='Unlock '+STATION_NAMES[station];
   document.getElementById('lock-sub').textContent='Enter the '+STATION_NAMES[station]+' PIN';
   document.getElementById('lock-pin-input').value='';
@@ -543,15 +596,35 @@ function requestUnlock(station,callback){
 function verifyPin(){
   const entered=document.getElementById('lock-pin-input').value;
   if(entered===PINS[pendingUnlockStation]){
+    const stationToNav=pendingIsStationSelect?pendingUnlockStation:null;
     closeLock();
-    if(pendingUnlockCallback)pendingUnlockCallback();
-    else{currentStation=pendingUnlockStation;document.getElementById('active-station-badge').textContent=STATION_NAMES[pendingUnlockStation];}
-  }else{document.getElementById('lock-error').textContent='Incorrect PIN. Try again.';document.getElementById('lock-pin-input').value='';}
+    if(pendingUnlockCallback){
+      pendingUnlockCallback();
+    } else {
+      currentStation=pendingUnlockStation;
+      document.getElementById('active-station-badge').textContent=STATION_NAMES[pendingUnlockStation];
+    }
+    if(stationToNav) switchTab(stationToNav);
+  }else{
+    document.getElementById('lock-error').textContent='Incorrect PIN. Try again.';
+    document.getElementById('lock-pin-input').value='';
+  }
 }
 function closeLock(){document.getElementById('lock-overlay').style.display='none';}
 function requireStation(needed,fn){
-  if(currentStation===needed||currentStation==='adm'){fn();return;}
-  requestUnlock(needed,()=>{currentStation=needed;document.getElementById('active-station-badge').textContent=STATION_NAMES[needed];fn();});
+  if(currentStation==='adm'){fn();return;}
+  if(currentStation===needed){fn();return;}
+  // Wrong station — challenge with the needed station PIN
+  // but do NOT change currentStation if wrong — keep them on their own station
+  const prevStation=currentStation;
+  requestUnlock(needed,()=>{
+    // Only allow if they actually know the needed PIN
+    // After unlock, revert to their original station — just allow this one action
+    fn();
+    // restore original station
+    currentStation=prevStation;
+    document.getElementById('active-station-badge').textContent=prevStation?STATION_NAMES[prevStation]:'Viewer';
+  });
 }
 
 // ── NAV ────────────────────────────────────────────────────
@@ -583,8 +656,18 @@ function statusBadge(p){
   const map={registered:'<span class="badge badge-pending">Registered</span>',vitals:'<span class="badge badge-vitals">Vitals Done</span>',prescribed:'<span class="badge badge-consult">Prescribed</span>',dispensed:'<span class="badge badge-dispensed">&#10003; Dispensed</span>'};
   let b=map[s]||'';
   if(p.referral&&p.referral.flag)b+=' <span class="badge badge-referral">Referral</span>';
+  const tf=tempFlag(p.temperature);
+  if(tf&&tf.badge)b+=' <span class="badge badge-fever">&#127777; '+tf.label+'</span>';
   return b;
 }
+
+function updateTempFlag(){
+  const t=parseFloat(document.getElementById('r-temp').value);
+  const el=document.getElementById('temp-flag-display');
+  if(!el)return;
+  el.innerHTML=tempFlagHTML(t);
+}
+
 function updateQueuePreview(){document.getElementById('queue-preview').textContent=fmtQueue(nextQueue());}
 
 // ── BMI ────────────────────────────────────────────────────
@@ -689,7 +772,7 @@ function saveVitals(id){
   requireStation('vit',()=>{
     const p=patients[id];
     p.vitals={glucose:parseFloat(document.getElementById('v-glucose').value)||null,rdt:document.getElementById('v-rdt').value||null,bpSystolic:parseInt(document.getElementById('v-bp-s').value)||null,bpDiastolic:parseInt(document.getElementById('v-bp-d').value)||null};
-    p.vitalsAt=new Date().toISOString();savePatient(p);alert('Vitals saved for '+p.name);
+    p.vitalsAt=new Date().toISOString();savePatient(p);showToast('Vitals saved for '+p.name);
   });
 }
 
@@ -728,7 +811,7 @@ function renderConDetail(id){
     p.weight?`<div class="detail-item"><div class="detail-label">Weight</div><div class="detail-value">${p.weight} kg</div></div>`:'',
     p.height?`<div class="detail-item"><div class="detail-label">Height</div><div class="detail-value">${p.height} cm</div></div>`:'',
     p.bmi?`<div class="detail-item"><div class="detail-label">BMI</div><div class="detail-value">${p.bmi}</div></div>`:'',
-    p.temperature?`<div class="detail-item"><div class="detail-label">Temp</div><div class="detail-value">${p.temperature} &deg;C</div></div>`:'',
+    p.temperature?`<div class="detail-item"><div class="detail-label">Temp</div><div class="detail-value">${p.temperature} &deg;C ${tempFlagHTML(p.temperature)}</div></div>`:'',
     v.glucose?`<div class="detail-item"><div class="detail-label">Glucose</div><div class="detail-value">${v.glucose} mmol/L</div></div>`:'',
     v.bpSystolic?`<div class="detail-item"><div class="detail-label">Blood Pressure</div><div class="detail-value">${v.bpSystolic}/${v.bpDiastolic} mmHg</div></div>`:'',
     v.rdt?`<div class="detail-item"><div class="detail-label">Malaria RDT</div><div class="detail-value" style="color:${v.rdt==='Positive'?'var(--danger)':'var(--success)'}">${v.rdt}</div></div>`:'',
@@ -761,12 +844,11 @@ function renderConDetail(id){
               <div style="flex:1">
                 <div class="rx-drug">${r.drug}</div>
                 <div class="rx-sig">${r.sig}</div>
-                ${r.qty?`<div style="font-size:11px;color:var(--text-muted);margin-top:2px">Qty: ${r.qty} tabs</div>`:''}
               </div>
               <button class="btn btn-outline" style="font-size:11px;padding:4px 8px" onclick="removeRxItem(${i},'${id}')">Remove</button>
             </div>`).join('')}
         </div>
-        <div style="display:grid;grid-template-columns:2fr 2fr 80px 60px;gap:8px;margin-top:8px;align-items:end">
+        <div style="display:grid;grid-template-columns:2fr 2fr auto;gap:8px;margin-top:8px;align-items:end">
           <div class="field">
             <label>Drug</label>
             <select id="rx-drug-sel" onchange="prefillRegimen()" style="font-size:12px;padding:6px 8px">
@@ -778,11 +860,7 @@ function renderConDetail(id){
             <label>Regimen / Instructions</label>
             <input type="text" id="rx-sig-input" placeholder="Editable regimen" style="font-size:12px;padding:6px 8px" />
           </div>
-          <div class="field">
-            <label>Qty (tabs)</label>
-            <input type="number" id="rx-qty-input" min="1" placeholder="e.g. 14" style="font-size:12px;padding:6px 8px" />
-          </div>
-          <button class="btn btn-gold-fill" style="font-size:12px;padding:7px 12px" onclick="addRxItem('${id}')">+ Add</button>
+          <button class="btn btn-gold-fill" style="font-size:12px;padding:7px 12px;align-self:flex-end" onclick="addRxItem('${id}')">+ Add</button>
         </div>
         <div id="stock-warning" style="font-size:12px;color:var(--danger);margin-top:6px;min-height:16px"></div>
         <hr class="divider">
@@ -880,7 +958,11 @@ function saveConsultation(id){
     const refFlag=document.getElementById('ref-flag').value==='yes';
     p.referral={flag:refFlag,reason:refFlag?document.getElementById('ref-reason').value:'',facility:refFlag?document.getElementById('ref-facility').value:''};
     p.consultedAt=new Date().toISOString();
-    savePatient(p);alert('Consultation saved.');
+    savePatient(p);
+    showToast('Consultation saved successfully.');
+    selectedConPatient=null;
+    document.getElementById('con-detail-area').innerHTML='<div class="empty-state"><div style="font-size:2rem">✓</div><div style="color:var(--success);font-weight:600;margin-top:8px">Consultation saved</div><div style="margin-top:4px">Select next patient from the list</div></div>';
+    renderConList();
   });
 }
 
@@ -913,6 +995,7 @@ function renderPhaDetail(id){
           <div class="detail-item"><div class="detail-label">Age</div><div class="detail-value">${p.age}</div></div>
           <div class="detail-item"><div class="detail-label">Sex</div><div class="detail-value">${p.sex}</div></div>
           ${p.weight?`<div class="detail-item"><div class="detail-label">Weight</div><div class="detail-value">${p.weight} kg</div></div>`:''}
+          ${p.temperature&&tempFlag(p.temperature)&&tempFlag(p.temperature).badge?`<div class="detail-item"><div class="detail-label">Temp</div><div class="detail-value">${tempFlagHTML(p.temperature)}</div></div>`:''}
           ${v.glucose?`<div class="detail-item"><div class="detail-label">Glucose</div><div class="detail-value">${v.glucose} mmol/L</div></div>`:''}
           ${v.bpSystolic?`<div class="detail-item"><div class="detail-label">BP</div><div class="detail-value">${v.bpSystolic}/${v.bpDiastolic} mmHg</div></div>`:''}
           ${v.rdt?`<div class="detail-item"><div class="detail-label">Malaria RDT</div><div class="detail-value" style="color:${v.rdt==='Positive'?'var(--danger)':'var(--success)'}">${v.rdt}</div></div>`:''}
@@ -1053,30 +1136,36 @@ function renderDrugAdmin(){
 }
 
 function showAddDrug(){
-  const name=prompt('Drug name:');if(!name)return;
-  const regimen=prompt('Default regimen:')||'';  const qtyStr=prompt('Opening stock (tablets, enter 0 if unknown):');
-  const qty=parseInt(qtyStr)||0;
-  const id='d'+Date.now();
-  drugs.push({id,name:name.trim(),regimen:regimen.trim(),defaultQty:qty});
-  stock[id]={total:qty,prescribed:0,dispensed:0};
-  if(!offlineMode&&db){db.ref('drugs').set(drugs);db.ref('stock/'+id).set(stock[id]);}
-  renderDrugAdmin();
+  requireStation('adm',()=>{
+    const name=prompt('Drug name:');if(!name)return;
+    const regimen=prompt('Default regimen:')||'';  const qtyStr=prompt('Opening stock (tablets, enter 0 if unknown):');
+    const qty=parseInt(qtyStr)||0;
+    const id='d'+Date.now();
+    drugs.push({id,name:name.trim(),regimen:regimen.trim(),defaultQty:qty});
+    stock[id]={total:qty,prescribed:0,dispensed:0};
+    if(!offlineMode&&db){db.ref('drugs').set(drugs);db.ref('stock/'+id).set(stock[id]);}
+    renderDrugAdmin();
+  });
 }
 
 function editDrug(i){
-  const d=drugs[i];
-  const name=prompt('Drug name:',d.name);if(name===null)return;
-  const regimen=prompt('Default regimen:',d.regimen);if(regimen===null)return;
-  drugs[i]={...d,name:name.trim(),regimen:regimen.trim()};
-  if(!offlineMode&&db)db.ref('drugs').set(drugs);
-  renderDrugAdmin();
+  requireStation('adm',()=>{
+    const d=drugs[i];
+    const name=prompt('Drug name:',d.name);if(name===null)return;
+    const regimen=prompt('Default regimen:',d.regimen);if(regimen===null)return;
+    drugs[i]={...d,name:name.trim(),regimen:regimen.trim()};
+    if(!offlineMode&&db)db.ref('drugs').set(drugs);
+    renderDrugAdmin();
+  });
 }
 
 function deleteDrug(i){
-  if(!confirm('Remove '+drugs[i].name+'?'))return;
-  drugs.splice(i,1);
-  if(!offlineMode&&db)db.ref('drugs').set(drugs);
-  renderDrugAdmin();
+  requireStation('adm',()=>{
+    if(!confirm('Remove '+drugs[i].name+'?'))return;
+    drugs.splice(i,1);
+    if(!offlineMode&&db)db.ref('drugs').set(drugs);
+    renderDrugAdmin();
+  });
 }
 
 function renderAdmPatients(){
@@ -1095,9 +1184,11 @@ function renderAdmPatients(){
 }
 
 function deletePatient(id){
-  if(!confirm('Delete this patient record? This cannot be undone.'))return;
-  if(offlineMode){delete patients[id];refreshAllViews();}
-  else db.ref('patients/'+id).remove();
+  requireStation('adm',()=>{
+    if(!confirm('Delete this patient record? This cannot be undone.'))return;
+    if(offlineMode){delete patients[id];refreshAllViews();}
+    else db.ref('patients/'+id).remove();
+  });
 }
 
 // ── REFRESH ────────────────────────────────────────────────
