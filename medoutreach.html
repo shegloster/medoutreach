@@ -925,21 +925,16 @@ function addRxItem(pid){
     const drugId=sel.value;
     const drugName=sel.options[sel.selectedIndex]?.text.split(' — ')[0];
     const sig=document.getElementById('rx-sig-input').value.trim();
-    const qty=parseInt(document.getElementById('rx-qty-input').value)||null;
-    if(!drugId){alert('Please select a drug.');return;}
-    const avail=stockAvailable(drugId);
-    const s=getStock(drugId);
-    if(s.total>0&&qty&&qty>avail){
-      if(!confirm(`Only ${avail} tabs available. Prescribe ${qty} anyway?`))return;
-    }
+    if(!drugId){showToast('Please select a drug.',true);return;}
     const p=patients[pid];
     p.prescription=p.prescription||[];
-    p.prescription.push({drugId,drug:drugName,sig:sig||'—',qty,dispensed:false});
-    // decrement prescribed stock
-    if(s.total>0&&qty){
-      saveStock(drugId,{total:s.total,prescribed:(s.prescribed||0)+qty,dispensed:s.dispensed||0});
-    }
+    p.prescription.push({drugId,drug:drugName,sig:sig||'—',qty:null,dispensed:false});
     savePatient(p);
+    // clear the inputs ready for next drug
+    document.getElementById('rx-drug-sel').value='';
+    document.getElementById('rx-sig-input').value='';
+    const warn=document.getElementById('stock-warning');
+    if(warn) warn.textContent='';
     renderConDetail(pid);
   });
 }
